@@ -1,0 +1,15 @@
+[package]
+name = "hdd_tool"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.29"   # egui + app framework
+nix = "0.29"      # for Linux syscalls
+rand = "0.8"      # for cryptographic random data generation
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_Security",
+] }
