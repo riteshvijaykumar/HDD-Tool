@@ -9,19 +9,11 @@ serde_json = "1.0"
 clap = { version = "4.0", features = ["derive"] }    # CLI args
 tokio = { version = "1", features = ["full"] }       # async ops
 anyhow = "1.0"                                       # error handling
-thiserror = "1.0"
+thiserror = "1.0"                                    # custom errors
 chrono = { version = "0.4.42", features = ["serde"] } # datetime with serde support
 sysinfo = "0.30"                                     # system and drive info
 uuid = { version = "1.0", features = ["v4"] }       # unique identifiers
 rand = "0.8"                                         # random data generation
-
-# Web API dependencies for GUI (updated versions)
-axum = { version = "0.7", features = ["ws"] }        # web framework
-tower = { version = "0.4", features = ["full"] }     # middleware
-tower-cors = "0.5"                                   # CORS support
-tower-http = { version = "0.5", features = ["fs", "cors"] } # static file serving
-tokio-stream = { version = "0.1", features = ["sync"] }  # tokio stream utilities
-futures = "0.3"                                      # futures utilities
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winioctl", "fileapi", "handleapi", "ioapiset"] }

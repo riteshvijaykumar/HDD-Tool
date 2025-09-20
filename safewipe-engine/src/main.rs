@@ -4,13 +4,15 @@ mod verify;
 mod report;
 mod util;
 mod sanitization;
-mod web_api;
+mod sdk; // SDK module instead of web_api
+mod usb_sanitizer; // Add USB sanitizer module
 
 use clap::{Parser, Subcommand};
 use anyhow::Result;
 use device::Device;
 use sanitization::SafeWipeController;
 use wipe::SanitizationMethod;
+use sdk::{SafeWipeSDK, SafeWipeSDKBuilder}; // Added SDK imports
 
 /// SafeWipe CLI - NIST SP 800-88 Compliant Data Sanitization
 #[derive(Parser)]
@@ -46,6 +48,9 @@ enum Commands {
         /// Sanitize all non-system devices
         #[arg(long)]
         all: bool,
+        /// Enable real device access (DANGEROUS - will actually modify drives)
+        #[arg(long)]
+        real_devices: bool,
     },
     /// Legacy wipe command (deprecated)
     Wipe {
@@ -68,11 +73,10 @@ async fn main() -> Result<()> {
     println!();
 
     let cli = Cli::parse();
-
     match cli.command {
         Commands::Gui { port } => {
             println!("🚀 Starting SafeWipe Web GUI...");
-            web_api::start_web_server(port).await?;
+            // web_api::start_web_server(port).await?;
         }
 
         Commands::Scan => {
@@ -113,7 +117,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Sanitize { method, devices, all } => {
+        Commands::Sanitize { method, devices, all, real_devices } => {
             let sanitization_method = match method.to_lowercase().as_str() {
                 "clear" => SanitizationMethod::Clear,
                 "purge" => SanitizationMethod::Purge,
@@ -124,7 +128,19 @@ async fn main() -> Result<()> {
                 }
             };
 
+            // Show warning if real device access is enabled
+            if real_devices {
+                println!("⚠️ REAL DEVICE MODE ENABLED - This will actually modify drives!");
+                println!("⚠️ Ensure you have backups and understand the risks!");
+                println!();
+            } else {
+                println!("ℹ️ Running in SAFE DEMO MODE - Real devices will be simulated");
+                println!("ℹ️ Use --real-devices flag to enable actual device modification");
+                println!();
+            }
+
             let mut controller = SafeWipeController::new()
+                .with_real_device_access(real_devices) // Enable/disable real device access
                 .with_progress_callback(|progress| {
                     println!("📊 Progress: Pass {}/{} - {:.1}% complete",
                         progress.current_pass,
@@ -161,6 +177,7 @@ async fn main() -> Result<()> {
             println!("Method: {:?}", plan.method);
             println!("Devices: {}", plan.devices.len());
             println!("Estimated Duration: {:?}", plan.estimated_duration);
+            println!("Mode: {}", if real_devices { "REAL DEVICE ACCESS" } else { "SAFE DEMO MODE" });
             println!();
 
             if !plan.safety_warnings.is_empty() {
@@ -171,14 +188,28 @@ async fn main() -> Result<()> {
                 println!();
             }
 
-            // Confirm before proceeding
-            println!("❓ Do you want to proceed? (yes/no):");
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
+            // Extra confirmation for real device access
+            if real_devices {
+                println!("🚨 DANGER: You are about to modify real storage devices!");
+                println!("🚨 This will PERMANENTLY DESTROY all data on selected devices!");
+                println!("🚨 Type 'CONFIRM REAL DEVICE ACCESS' to proceed:");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
 
-            if input.trim().to_lowercase() != "yes" {
-                println!("❌ Operation cancelled.");
-                return Ok(());
+                if input.trim() != "CONFIRM REAL DEVICE ACCESS" {
+                    println!("❌ Real device access not confirmed. Operation cancelled.");
+                    return Ok(());
+                }
+            } else {
+                // Standard confirmation for demo mode
+                println!("❓ Do you want to proceed with demo sanitization? (yes/no):");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+
+                if input.trim().to_lowercase() != "yes" {
+                    println!("❌ Operation cancelled.");
+                    return Ok(());
+                }
             }
 
             // Execute the plan

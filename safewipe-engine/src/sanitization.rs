@@ -25,6 +25,7 @@ pub struct SanitizationReport {
 pub struct SafeWipeController {
     detector: DriveDetector,
     engine: SanitizationEngine,
+    allow_real_devices: bool, // Add real device access control
 }
 
 impl SafeWipeController {
@@ -32,7 +33,14 @@ impl SafeWipeController {
         Self {
             detector: DriveDetector::new(),
             engine: SanitizationEngine::new(),
+            allow_real_devices: false, // Default to safe mode
         }
+    }
+
+    pub fn with_real_device_access(mut self, enabled: bool) -> Self {
+        self.allow_real_devices = enabled;
+        self.engine = self.engine.with_real_device_access(enabled);
+        self
     }
 
     pub fn with_progress_callback<F>(mut self, callback: F) -> Self 
