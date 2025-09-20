@@ -4,15 +4,12 @@ mod verify;
 mod report;
 mod util;
 mod sanitization;
-mod sdk; // SDK module instead of web_api
-mod usb_sanitizer; // Add USB sanitizer module
 
 use clap::{Parser, Subcommand};
 use anyhow::Result;
 use device::Device;
 use sanitization::SafeWipeController;
 use wipe::SanitizationMethod;
-use sdk::{SafeWipeSDK, SafeWipeSDKBuilder}; // Added SDK imports
 
 /// SafeWipe CLI - NIST SP 800-88 Compliant Data Sanitization
 #[derive(Parser)]
@@ -74,9 +71,9 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
-        Commands::Gui { port } => {
+        Commands::Gui { port: _port } => {
             println!("🚀 Starting SafeWipe Web GUI...");
-            // web_api::start_web_server(port).await?;
+            // web_api::start_web_server(_port).await?;
         }
 
         Commands::Scan => {
