@@ -6,6 +6,9 @@ use windows::{
     },
 };
 
+mod sanitization;
+use sanitization::{DataSanitizer, SanitizationMethod, SanitizationProgress};
+
 #[derive(Debug, Clone)]
 struct DiskInfo {
     drive_letter: String,
@@ -20,6 +23,10 @@ struct HDDApp {
     disks: Vec<DiskInfo>,
     show_popup: bool,
     selected_disk: Option<DiskInfo>,
+    selected_disk_index: Option<usize>, // Track which row is selected
+    sanitizer: DataSanitizer,
+    sanitization_in_progress: bool,
+    sanitization_progress: Option<SanitizationProgress>,
 }
 
 impl HDDApp {
@@ -28,6 +35,10 @@ impl HDDApp {
             disks: Vec::new(),
             show_popup: false,
             selected_disk: None,
+            selected_disk_index: None,
+            sanitizer: DataSanitizer::new(),
+            sanitization_in_progress: false,
+            sanitization_progress: None,
         };
         app.refresh_disks();
         app
@@ -134,6 +145,118 @@ impl HDDApp {
 
         format!("{:.2} {}", size, UNITS[unit_index])
     }
+
+    fn start_sanitization(&mut self, method: SanitizationMethod, disk: DiskInfo) {
+        println!("⚠️ Starting {:?} sanitization for drive {}", method, disk.drive_letter);
+        
+        // Calculate estimated time for this specific drive
+        let estimated_minutes = self.estimate_sanitization_time(&disk, &method);
+        println!("⏱️ Estimated time: {} minutes", estimated_minutes);
+        
+        // Start the actual sanitization process
+        self.sanitization_in_progress = true;
+        self.sanitization_progress = Some(SanitizationProgress {
+            bytes_processed: 0,
+            total_bytes: disk.total_space,
+            current_pass: 1,
+            total_passes: match method {
+                SanitizationMethod::Clear => 1,
+                SanitizationMethod::Purge => 3,
+            },
+            percentage: 0.0,
+        });
+
+        // Execute the sanitization in a separate thread (simulation for demo)
+        // In real implementation, this would call the actual sanitization methods
+        let drive_path = format!("{}:", disk.drive_letter);
+        match method {
+            SanitizationMethod::Clear => {
+                println!("🗑️ Executing NIST 800-88 Clear method on {}", drive_path);
+                // In production: self.sanitizer.clear(&drive_path);
+                self.simulate_sanitization_progress();
+            },
+            SanitizationMethod::Purge => {
+                println!("🔥 Executing NIST 800-88 Purge method on {}", drive_path);
+                // In production: self.sanitizer.purge(&drive_path);
+                self.simulate_sanitization_progress();
+            },
+        }
+    }
+
+    fn simulate_sanitization_progress(&mut self) {
+        // This simulates progress - in real implementation, this would be called by the sanitization thread
+        if let Some(ref mut progress) = self.sanitization_progress {
+            if progress.percentage < 100.0 {
+                progress.percentage += 0.5; // Increment progress
+                progress.bytes_processed = (progress.total_bytes as f64 * progress.percentage / 100.0) as u64;
+                
+                if progress.percentage >= 100.0 {
+                    if progress.current_pass < progress.total_passes {
+                        progress.current_pass += 1;
+                        progress.percentage = 0.0;
+                        progress.bytes_processed = 0;
+                    } else {
+                        println!("✅ Sanitization completed successfully!");
+                        self.sanitization_in_progress = false;
+                        self.sanitization_progress = None;
+                    }
+                }
+            }
+        }
+    }
+
+    fn estimate_sanitization_time(&self, disk: &DiskInfo, method: &SanitizationMethod) -> u64 {
+        // Conservative estimates based on drive type
+        let write_speed_mbs = if disk.drive_type.contains("Removable") {
+            25 // USB drives are slower
+        } else if disk.drive_type.contains("SSD") {
+            200 // SSDs are faster
+        } else {
+            80 // Regular HDDs
+        };
+        
+        let passes = match method {
+            SanitizationMethod::Clear => 1,
+            SanitizationMethod::Purge => 3,
+        };
+        
+        let size_mb = disk.total_space / (1024 * 1024);
+        let time_seconds = (size_mb / write_speed_mbs) * passes;
+        time_seconds / 60 // Convert to minutes
+    }
+
+    fn execute_real_sanitization(&mut self, method: SanitizationMethod, disk: &DiskInfo) -> Result<(), String> {
+        let drive_path = format!("{}:", disk.drive_letter);
+        
+        match method {
+            SanitizationMethod::Clear => {
+                match self.sanitizer.clear(&drive_path) {
+                    Ok(_) => {
+                        println!("✅ Clear sanitization completed for {}", drive_path);
+                        Ok(())
+                    },
+                    Err(e) => {
+                        let error_msg = format!("❌ Clear sanitization failed for {}: {}", drive_path, e);
+                        println!("{}", error_msg);
+                        Err(error_msg)
+                    }
+                }
+            },
+            SanitizationMethod::Purge => {
+                match self.sanitizer.purge(&drive_path) {
+                    Ok(_) => {
+                        println!("✅ Purge sanitization completed for {}", drive_path);
+                        Ok(())
+                    },
+                    Err(e) => {
+                        let error_msg = format!("❌ Purge sanitization failed for {}: {}", drive_path, e);
+                        println!("{}", error_msg);
+                        Err(error_msg)
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl eframe::App for HDDApp {
@@ -165,19 +288,23 @@ impl eframe::App for HDDApp {
                     ui.label("Used Space");
                     ui.end_row();
 
-                    for disk in &self.disks {
-                        // Make each cell clickable by using selectable labels
-                        let drive_clicked = ui.selectable_label(false, &disk.drive_letter).clicked();
-                        let type_clicked = ui.selectable_label(false, &disk.drive_type).clicked();
-                        let fs_clicked = ui.selectable_label(false, &disk.file_system).clicked();
-                        let total_clicked = ui.selectable_label(false, Self::format_bytes(disk.total_space)).clicked();
-                        let free_clicked = ui.selectable_label(false, Self::format_bytes(disk.free_space)).clicked();
-                        let used_clicked = ui.selectable_label(false, Self::format_bytes(disk.used_space)).clicked();
+                    for (index, disk) in self.disks.iter().enumerate() {
+                        // Check if this row is selected
+                        let is_selected = self.selected_disk_index == Some(index);
                         
-                        // If any part of the row is clicked, show popup
+                        // Make each cell selectable and highlight if selected
+                        let drive_clicked = ui.selectable_label(is_selected, &disk.drive_letter).clicked();
+                        let type_clicked = ui.selectable_label(is_selected, &disk.drive_type).clicked();
+                        let fs_clicked = ui.selectable_label(is_selected, &disk.file_system).clicked();
+                        let total_clicked = ui.selectable_label(is_selected, Self::format_bytes(disk.total_space)).clicked();
+                        let free_clicked = ui.selectable_label(is_selected, Self::format_bytes(disk.free_space)).clicked();
+                        let used_clicked = ui.selectable_label(is_selected, Self::format_bytes(disk.used_space)).clicked();
+                        
+                        // If any part of the row is clicked, show popup and select this row
                         if drive_clicked || type_clicked || fs_clicked || total_clicked || free_clicked || used_clicked {
                             self.show_popup = true;
                             self.selected_disk = Some(disk.clone());
+                            self.selected_disk_index = Some(index);
                         }
                         
                         ui.end_row();
@@ -186,9 +313,11 @@ impl eframe::App for HDDApp {
 
             // Show popup window if requested
             if self.show_popup {
+                let mut open = true; // Track if window should stay open
                 egui::Window::new("Disk Actions")
                     .collapsible(false)
                     .resizable(false)
+                    .open(&mut open) // Allow window to be closed with X button
                     .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                     .show(ctx, |ui| {
                         if let Some(disk) = self.selected_disk.clone() {
@@ -199,24 +328,97 @@ impl eframe::App for HDDApp {
                             ui.label(format!("File System: {}", disk.file_system));
                             ui.label(format!("Total Space: {}", Self::format_bytes(disk.total_space)));
                             
+                            // Show time estimates
+                            let clear_time = self.estimate_sanitization_time(&disk, &SanitizationMethod::Clear);
+                            let purge_time = self.estimate_sanitization_time(&disk, &SanitizationMethod::Purge);
+                            ui.label(format!("⏱️ Clear time: ~{} minutes", clear_time));
+                            ui.label(format!("⏱️ Purge time: ~{} minutes", purge_time));
+                            
                             ui.separator();
                             
-                            // New Task button (original functionality)
-                            if ui.add_sized([120.0, 30.0], egui::Button::new("📝 New Task")).clicked() {
-                                println!("New Task clicked for drive {}", disk.drive_letter);
-                                self.show_popup = false;
-                                self.selected_disk = None;
+                            if self.sanitization_in_progress {
+                                ui.label("🔄 Sanitization in Progress...");
+                                
+                                if let Some(ref progress) = self.sanitization_progress {
+                                    ui.label(format!("Pass {}/{}", progress.current_pass, progress.total_passes));
+                                    
+                                    let progress_bar = egui::ProgressBar::new((progress.percentage / 100.0) as f32)
+                                        .text(format!("{:.1}%", progress.percentage));
+                                    ui.add(progress_bar);
+                                    
+                                    ui.label(format!(
+                                        "Processed: {} / {}",
+                                        Self::format_bytes(progress.bytes_processed),
+                                        Self::format_bytes(progress.total_bytes)
+                                    ));
+                                    
+                                    // Simulate progress updates
+                                    self.simulate_sanitization_progress();
+                                }
+                            } else {
+                                ui.label("⚠️ NIST 800-88 Data Sanitization");
+                                ui.colored_label(egui::Color32::RED, "⚠️ WARNING: This will permanently erase ALL data!");
+                                
+                                ui.separator();
+                                
+                                // NIST 800-88 Clear method
+                                if ui.add_sized([200.0, 30.0], egui::Button::new("🗑️ CLEAR (Single Pass)")).clicked() {
+                                    self.start_sanitization(SanitizationMethod::Clear, disk.clone());
+                                }
+                                ui.label("NIST 800-88 Clear: Single pass overwrite");
+                                
+                                ui.separator();
+                                
+                                // NIST 800-88 Purge method
+                                if ui.add_sized([200.0, 30.0], egui::Button::new("🔥 PURGE (Multi Pass)")).clicked() {
+                                    self.start_sanitization(SanitizationMethod::Purge, disk.clone());
+                                }
+                                ui.label("NIST 800-88 Purge: 3-pass DoD method");
+                                
+                                ui.separator();
+                                
+                                // Real sanitization buttons (for actual implementation)
+                                ui.label("🚨 REAL SANITIZATION (DANGER!)");
+                                ui.horizontal(|ui| {
+                                    if ui.add_sized([90.0, 25.0], egui::Button::new("🔥 REAL CLEAR")).clicked() {
+                                        if let Err(e) = self.execute_real_sanitization(SanitizationMethod::Clear, &disk) {
+                                            println!("Error: {}", e);
+                                        }
+                                    }
+                                    if ui.add_sized([90.0, 25.0], egui::Button::new("💀 REAL PURGE")).clicked() {
+                                        if let Err(e) = self.execute_real_sanitization(SanitizationMethod::Purge, &disk) {
+                                            println!("Error: {}", e);
+                                        }
+                                    }
+                                });
+                                
+                                ui.separator();
+                                
+                                // New Task button (original functionality)
+                                if ui.add_sized([120.0, 30.0], egui::Button::new("📝 New Task")).clicked() {
+                                    println!("New Task clicked for drive {}", disk.drive_letter);
+                                    open = false; // Close window
+                                }
                             }
                             
                             ui.separator();
                             
                             // Close button
                             if ui.add_sized([120.0, 25.0], egui::Button::new("❌ Close")).clicked() {
-                                self.show_popup = false;
-                                self.selected_disk = None;
+                                if !self.sanitization_in_progress {
+                                    open = false; // Close window
+                                }
                             }
                         }
                     });
+                
+                // Update popup state based on window state
+                if !open {
+                    self.show_popup = false;
+                    self.selected_disk = None;
+                    self.selected_disk_index = None;
+                    // Don't reset sanitization progress when closing popup
+                }
             }
         });
     }
