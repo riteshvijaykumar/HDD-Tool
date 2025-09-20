@@ -127,7 +127,7 @@ impl HDDApp {
             let used_space = total_bytes.saturating_sub(free_bytes);
 
             Some(DiskInfo {
-                drive_letter: drive_path[..drive_path.len()-1].to_string(),
+                drive_letter: drive_path[..2].to_string(), // Get just "E:" instead of "E"
                 drive_type,
                 file_system,
                 total_space: total_bytes,
@@ -171,55 +171,92 @@ impl HDDApp {
     }
 
     fn execute_real_sanitization(&mut self, method: SanitizationMethod, disk: &DiskInfo) -> Result<(), String> {
-        // Use Windows raw device path format for direct disk access
-        let drive_path = format!("\\\\.\\{}:", disk.drive_letter);
-        
         println!("🔄 Starting {} sanitization for drive {}", 
                  match method { SanitizationMethod::Clear => "CLEAR", SanitizationMethod::Purge => "PURGE" }, 
-                 drive_path);
+                 disk.drive_letter);
         
         // Check if this is the system drive
         if disk.drive_letter == "C" {
-            let error_msg = format!("❌ Cannot sanitize system drive {} - this would make your computer unbootable!", drive_path);
+            let error_msg = format!("❌ Cannot sanitize system drive {} - this would make your computer unbootable!", disk.drive_letter);
             println!("{}", error_msg);
             return Err(error_msg);
         }
         
         // Warning for data drives
-        println!("⚠️  WARNING: About to permanently erase all data on drive {}", drive_path);
+        println!("⚠️  WARNING: About to permanently erase all data on drive {}", disk.drive_letter);
         println!("⚠️  Drive contains: {} total space", Self::format_bytes(disk.total_space));
         println!("⚠️  Note: This requires Administrator privileges and the drive must not be in use");
         
-        match method {
-            SanitizationMethod::Clear => {
-                println!("🔧 Attempting NIST 800-88 Clear (single pass) on {}", drive_path);
-                match self.sanitizer.clear(&drive_path, sanitization::SanitizationPattern::Random, None) {
-                    Ok(_) => {
-                        println!("✅ Clear sanitization completed for {}", drive_path);
-                        Ok(())
-                    },
-                    Err(e) => {
-                        let error_msg = format!("❌ Clear sanitization failed for {}: {} \n💡 Tip: Right-click the app and 'Run as Administrator', ensure drive is not in use, or try a USB/external drive", drive_path, e);
-                        println!("{}", error_msg);
-                        Err(error_msg)
-                    }
+        // Try different path formats for Windows device access
+        let device_paths = vec![
+            format!("\\\\.\\{}", disk.drive_letter),            // Standard raw device path (E:)
+        ];
+        
+        let mut last_error = String::new();
+        
+        // First try direct device access
+        for device_path in device_paths.iter() {
+            println!("🔧 Attempting direct device access: {}", device_path);
+            
+            let result = match method {
+                SanitizationMethod::Clear => {
+                    self.sanitizer.clear(device_path, sanitization::SanitizationPattern::Random, None)
+                },
+                SanitizationMethod::Purge => {
+                    self.sanitizer.purge(device_path, None)
                 }
-            },
-            SanitizationMethod::Purge => {
-                println!("🔧 Attempting NIST 800-88 Purge (3-pass) on {}", drive_path);
-                match self.sanitizer.purge(&drive_path, None) {
-                    Ok(_) => {
-                        println!("✅ Purge sanitization completed for {}", drive_path);
-                        Ok(())
-                    },
-                    Err(e) => {
-                        let error_msg = format!("❌ Purge sanitization failed for {}: {} \n💡 Tip: Right-click the app and 'Run as Administrator', ensure drive is not in use, or try a USB/external drive", drive_path, e);
-                        println!("{}", error_msg);
-                        Err(error_msg)
-                    }
+            };
+            
+            match result {
+                Ok(_) => {
+                    println!("✅ Direct {} sanitization completed for {}", 
+                             match method { SanitizationMethod::Clear => "Clear", SanitizationMethod::Purge => "Purge" },
+                             disk.drive_letter);
+                    return Ok(());
+                },
+                Err(e) => {
+                    last_error = format!("Direct access failed: {}", e);
+                    println!("❌ Direct device access failed: {}", e);
                 }
             }
         }
+        
+        // If direct access failed, try file-level sanitization
+        println!("🔧 Falling back to file-level sanitization...");
+        let drive_root = format!("{}\\", disk.drive_letter); // Now disk.drive_letter is "E:" so this becomes "E:\"
+        let passes = match method {
+            SanitizationMethod::Clear => 1,
+            SanitizationMethod::Purge => 3,
+        };
+        
+        println!("🔧 Using drive root path: {}", drive_root);
+        
+        match self.sanitizer.sanitize_files_and_free_space(&drive_root, passes, None) {
+            Ok(_) => {
+                println!("✅ File-level {} sanitization completed for drive {}", 
+                         match method { SanitizationMethod::Clear => "Clear", SanitizationMethod::Purge => "Purge" },
+                         disk.drive_letter);
+                return Ok(());
+            },
+            Err(e) => {
+                last_error = format!("{}; File-level sanitization also failed: {}", last_error, e);
+                println!("❌ File-level sanitization error: {}", e);
+            }
+        }
+        
+        // If all paths failed, return comprehensive error
+        let error_msg = format!(
+            "❌ All sanitization attempts failed for drive {}:\n{}\n\n💡 Solutions to try:\n\
+            • Right-click app and 'Run as Administrator'\n\
+            • Ensure no files are open on the drive\n\
+            • Try ejecting and reinserting USB drive\n\
+            • Use 'diskpart' command line tool as alternative\n\
+            • Some drives may have write protection",
+            disk.drive_letter, last_error
+        );
+        
+        println!("{}", error_msg);
+        Err(error_msg)
     }
 }
 

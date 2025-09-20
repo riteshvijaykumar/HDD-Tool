@@ -1,6 +1,6 @@
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, read_dir, remove_file, create_dir_all};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use rand::Rng;
 
 #[derive(Debug, Clone)]
@@ -86,6 +86,196 @@ impl DataSanitizer {
         ];
         
         self.sanitize_device(device_path, patterns, progress_callback)
+    }
+
+    /// File-level sanitization for when direct device access fails
+    /// This method overwrites all files on the drive and fills free space
+    pub fn sanitize_files_and_free_space<P: AsRef<Path>>(
+        &self,
+        drive_root: P,
+        passes: u32,
+        _progress_callback: Option<Box<dyn Fn(SanitizationProgress)>>,
+    ) -> io::Result<()> {
+        let drive_path = drive_root.as_ref();
+        
+        println!("🔧 Starting file-level sanitization on {}", drive_path.display());
+        
+        // Check if the drive path exists and is accessible
+        if !drive_path.exists() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, 
+                format!("Drive path {} does not exist", drive_path.display())));
+        }
+        
+        if !drive_path.is_dir() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, 
+                format!("Path {} is not a directory", drive_path.display())));
+        }
+        
+        // Step 1: Overwrite all existing files
+        println!("🗂️  Phase 1: Overwriting all existing files...");
+        match self.overwrite_all_files(drive_path, passes) {
+            Ok(_) => println!("✅ File overwriting completed"),
+            Err(e) => {
+                println!("❌ File overwriting failed: {}", e);
+                return Err(e);
+            }
+        }
+        
+        // Step 2: Fill free space with random data
+        println!("💾 Phase 2: Filling free space with random data...");
+        match self.fill_free_space(drive_path, passes) {
+            Ok(_) => println!("✅ Free space filling completed"),
+            Err(e) => {
+                println!("❌ Free space filling failed: {}", e);
+                return Err(e);
+            }
+        }
+        
+        println!("✅ File-level sanitization completed");
+        Ok(())
+    }
+
+    /// Recursively overwrite all files in a directory
+    fn overwrite_all_files(&self, dir: &Path, passes: u32) -> io::Result<()> {
+        if !dir.is_dir() {
+            println!("❌ Path is not a directory: {}", dir.display());
+            return Ok(());
+        }
+
+        println!("🔍 Scanning directory: {}", dir.display());
+        
+        let entries = match read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                println!("❌ Failed to read directory {}: {}", dir.display(), e);
+                return Err(e);
+            }
+        };
+
+        let mut file_count = 0;
+        let mut dir_count = 0;
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    println!("❌ Failed to read directory entry: {}", e);
+                    continue;
+                }
+            };
+            
+            let path = entry.path();
+
+            if path.is_dir() {
+                dir_count += 1;
+                println!("📁 Processing subdirectory: {}", path.display());
+                // Recursively process subdirectories
+                if let Err(e) = self.overwrite_all_files(&path, passes) {
+                    println!("❌ Failed to process subdirectory {}: {}", path.display(), e);
+                }
+            } else if path.is_file() {
+                file_count += 1;
+                println!("📄 Found file: {}", path.display());
+                
+                // Overwrite the file multiple times
+                for pass in 1..=passes {
+                    println!("  🔄 Pass {}/{}: Overwriting {}", pass, passes, path.display());
+                    if let Err(e) = self.overwrite_single_file(&path) {
+                        println!("  ❌ Failed to overwrite {}: {}", path.display(), e);
+                        continue;
+                    }
+                }
+                
+                // Delete the file after overwriting
+                match remove_file(&path) {
+                    Ok(_) => println!("  ✅ Deleted: {}", path.display()),
+                    Err(e) => println!("  ❌ Failed to delete {}: {}", path.display(), e),
+                }
+            }
+        }
+        
+        println!("📊 Directory scan complete: {} files, {} subdirectories processed", file_count, dir_count);
+        Ok(())
+    }
+
+    /// Overwrite a single file with random data
+    fn overwrite_single_file(&self, file_path: &Path) -> io::Result<()> {
+        if let Ok(metadata) = file_path.metadata() {
+            if metadata.len() == 0 {
+                return Ok(()); // Skip empty files
+            }
+
+            let mut file = OpenOptions::new()
+                .write(true)
+                .truncate(false)
+                .open(file_path)?;
+
+            let file_size = metadata.len();
+            let mut bytes_written = 0u64;
+
+            while bytes_written < file_size {
+                let remaining = file_size - bytes_written;
+                let write_size = std::cmp::min(self.buffer_size as u64, remaining) as usize;
+                
+                let mut buffer = vec![0u8; write_size];
+                self.fill_random(&mut buffer);
+                
+                file.write_all(&buffer)?;
+                bytes_written += write_size as u64;
+            }
+            
+            file.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Fill free space with random data
+    fn fill_free_space(&self, drive_path: &Path, passes: u32) -> io::Result<()> {
+        for pass in 1..=passes {
+            println!("  Pass {}/{}: Filling free space on {}", pass, passes, drive_path.display());
+            
+            // Create a temporary directory for our fill files
+            let temp_dir = drive_path.join("__sanitize_temp__");
+            let _ = create_dir_all(&temp_dir);
+
+            let mut file_counter = 0;
+            let chunk_size = 50 * 1024 * 1024; // 50MB chunks
+
+            loop {
+                let temp_file = temp_dir.join(format!("fill_{}.tmp", file_counter));
+                
+                match File::create(&temp_file) {
+                    Ok(mut file) => {
+                        let mut buffer = vec![0u8; chunk_size];
+                        self.fill_random(&mut buffer);
+                        
+                        match file.write_all(&buffer) {
+                            Ok(_) => {
+                                file_counter += 1;
+                                if file_counter % 10 == 0 {
+                                    println!("    Created {} fill files...", file_counter);
+                                }
+                            },
+                            Err(_) => {
+                                // Disk is probably full, stop creating files
+                                let _ = remove_file(&temp_file);
+                                break;
+                            }
+                        }
+                    },
+                    Err(_) => {
+                        // Can't create more files, disk is probably full
+                        break;
+                    }
+                }
+            }
+
+            // Clean up temporary files
+            if temp_dir.exists() {
+                let _ = std::fs::remove_dir_all(&temp_dir);
+            }
+        }
+        Ok(())
     }
 
     /// Core sanitization implementation
