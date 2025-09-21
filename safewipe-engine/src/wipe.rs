@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use rand::{thread_rng, RngCore};
+use rand::{SeedableRng, rngs::StdRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use tokio::fs::{File, OpenOptions};
@@ -328,7 +328,7 @@ impl SanitizationEngine {
     }
 
     async fn overwrite_with_random(&self, device: &Device, passes: u8) -> Result<()> {
-        let mut rng = thread_rng();
+        let mut rng = StdRng::from_entropy();
         let chunk_size = 1024 * 1024; // 1MB chunks
 
         for pass in 1..=passes {

@@ -20,3 +20,8 @@ winapi = { version = "0.3", features = ["winioctl", "fileapi", "handleapi", "ioa
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[lib]
+name = "safewipe_engine"
+path = "src/lib.rs"
+crate-type = ["lib"]
