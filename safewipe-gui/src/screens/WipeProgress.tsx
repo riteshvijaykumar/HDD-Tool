@@ -1,36 +1,53 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Box, Typography, LinearProgress, Button, Paper, Chip, List, ListItem, ListItemText, Stack } from '@mui/material';
 import PauseIcon from '@mui/icons-material/Pause';
 import CancelIcon from '@mui/icons-material/Cancel';
 
-const mockProgress = {
-  percent: 60,
-  currentPass: 2,
-  totalPasses: 3,
-  speed: 120,
-  status: 'Overwriting block 1023...'
-};
-
-const mockLog = [
-  'Started wipe operation',
-  'Pass 1 complete',
-  'Pass 2 in progress',
-  'Overwriting block 1023...'
-];
+// Replace with your actual API call
+async function fetchWipeProgress() {
+  return await window.api.get_wipe_progress();
+}
+async function fetchWipeLog() {
+  return await window.api.get_wipe_log();
+}
 
 const WipeProgress: React.FC = () => {
-  const [progress] = useState(mockProgress);
-  const [log] = useState(mockLog);
+  const [progress, setProgress] = useState<any>(null);
+  const [log, setLog] = useState<string[]>([]);
   const [completed, setCompleted] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (progress.percent >= 100) {
-      setCompleted(true);
-      setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('navigate', { detail: 'verification' }));
-      }, 1000);
-    }
-  }, [progress.percent]);
+    let interval: any;
+    fetchWipeProgress().then((resp) => {
+      setProgress(resp.data);
+      setLoading(false);
+      if (resp.data.percent >= 100) {
+        setCompleted(true);
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('navigate', { detail: 'verification' }));
+        }, 1000);
+      }
+    });
+    fetchWipeLog().then((resp) => setLog(resp.data));
+    interval = setInterval(() => {
+      fetchWipeProgress().then((resp) => {
+        setProgress(resp.data);
+        if (resp.data.percent >= 100) {
+          setCompleted(true);
+          clearInterval(interval);
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('navigate', { detail: 'verification' }));
+          }, 1000);
+        }
+      });
+      fetchWipeLog().then((resp) => setLog(resp.data));
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (loading) return <Typography>Loading...</Typography>;
+  if (!progress) return <Typography color="error">Failed to load progress.</Typography>;
 
   return (
     <Box sx={{ p: 4 }}>
@@ -48,21 +65,15 @@ const WipeProgress: React.FC = () => {
           </Box>
           <Box flexShrink={0} minWidth={180} textAlign="right">
             <Button variant="outlined" color="warning" startIcon={<PauseIcon />} sx={{ mr: 1 }}>Pause</Button>
-            <Button variant="contained" color="error" startIcon={<CancelIcon />}>Cancel</Button>
+            <Button variant="outlined" color="error" startIcon={<CancelIcon />}>Cancel</Button>
           </Box>
         </Stack>
-      </Paper>
-      <Typography variant="h6" gutterBottom>Log</Typography>
-      <Paper elevation={1} sx={{ maxHeight: 200, overflow: 'auto', p: 2 }}>
-        <List dense>
+        <List sx={{ mt: 2, maxHeight: 180, overflow: 'auto' }}>
           {log.map((entry, idx) => (
-            <ListItem key={idx}>
-              <ListItemText primary={entry} />
-            </ListItem>
+            <ListItem key={idx}><ListItemText primary={entry} /></ListItem>
           ))}
         </List>
       </Paper>
-      {completed && <Typography color="success.main" mt={2}>Wipe complete! Redirecting to verification...</Typography>}
     </Box>
   );
 };

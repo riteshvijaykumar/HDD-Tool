@@ -1,29 +1,39 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Box, Typography, Paper, Button, Chip, Stack } from '@mui/material';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 
-const mockVerification = {
-  randomBlockCheck: true,
-  cryptoKeyInvalidation: true,
-  status: 'passed',
-};
+// Replace with your actual API call
+async function fetchVerification() {
+  return await window.api.get_verification();
+}
 
 const Verification: React.FC = () => {
-  const [verification, setVerification] = useState(mockVerification);
+  const [verification, setVerification] = useState<any>(null);
   const [verifying, setVerifying] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchVerification().then((resp) => {
+      setVerification(resp.data);
+      setLoading(false);
+    });
+  }, []);
 
   const handleRerun = () => {
     setVerifying(true);
-    setTimeout(() => {
-      setVerification(mockVerification); // Simulate re-verification
+    fetchVerification().then((resp) => {
+      setVerification(resp.data);
       setVerifying(false);
-    }, 1000);
+    });
   };
 
   const handleNext = () => {
     window.dispatchEvent(new CustomEvent('navigate', { detail: 'report' }));
   };
+
+  if (loading) return <Typography>Loading...</Typography>;
+  if (!verification) return <Typography color="error">Failed to load verification.</Typography>;
 
   return (
     <Box sx={{ p: 4 }}>

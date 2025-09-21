@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Typography, Button, Card, CardContent, List, ListItem, ListItemText, Chip, Stack, CircularProgress, Alert } from '@mui/material';
+import { Box, Typography, Button, Card, CardContent, List, ListItem, ListItemText, Stack, CircularProgress, Alert } from '@mui/material';
 import StorageIcon from '@mui/icons-material/Storage';
 import PlayCircleFilledWhiteIcon from '@mui/icons-material/PlayCircleFilledWhite';
 import { fetchDevices, DeviceInfo } from '../api/devices';
@@ -9,6 +9,7 @@ const mockActivity = [
   { device: 'Kingston USB', action: 'Started', date: '2025-09-21' },
 ];
 
+// @ts-ignore
 const statusColor = (status: string) => {
   switch (status) {
     case 'Sanitized': return 'success';
