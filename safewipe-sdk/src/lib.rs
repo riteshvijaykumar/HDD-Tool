@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use safewipe_engine::device::{Device, DriveDetector, DriveType, Interface, VendorCapabilities};
-pub use safewipe_engine::wipe::{SanitizationEngine, SanitizationMethod, WipeResult as EngineWipeResult, WipeProgress, WipeStatus};
+pub use safewipe_engine::wipe::{SanitizationEngine, SanitizationMethod, WipeResult as EngineWipeResult, WipeProgress, WipeStatus, WipeResult};
 pub use safewipe_engine::report::{generate_report, Report};
 use safewipe_engine::verify::verify_device;
 use serde::{Serialize, Deserialize};
@@ -188,8 +188,7 @@ impl SafeWipeClient {
 
     async fn scan_devices(&self) -> Result<Vec<DeviceInfo>> {
         let mut detector = DriveDetector::new();
-        let devices = detector.list_devices()?;
-
+        let devices = detector.list_devices().map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(devices.into_iter().map(DeviceInfo::from).collect())
     }
 
@@ -248,61 +247,100 @@ impl SafeWipeClient {
         if let Err(e) = self.execute_wipe_operation(operation_id.clone()).await {
             eprintln!("Wipe operation failed: {}", e);
             // Update operation status to failed
-            let mut operations = self.operations.write().await;
-            if let Some(op) = operations.get_mut(&operation_id) {
+            let mut ops = self.operations.write().await;
+            if let Some(op) = ops.get_mut(&operation_id) {
                 op.status = WipeStatus::Failed(e.to_string());
                 op.updated_at = Utc::now();
             }
+            return ApiResponse::error(format!("Wipe operation failed: {}", e));
         }
-
         ApiResponse::success(operation_id)
     }
 
-    async fn execute_wipe_operation(&self, operation_id: String) -> Result<()> {
-        let mut operation = {
-            let operations = self.operations.read().await;
-            match operations.get(&operation_id) {
-                Some(op) => op.clone(),
-                None => return Err(anyhow::anyhow!("Operation not found")),
-            }
+    /// Internal: Execute a wipe operation and update progress
+    async fn execute_wipe_operation(&self, operation_id: String) -> anyhow::Result<()> {
+        let op = {
+            let ops = self.operations.read().await;
+            ops.get(&operation_id).cloned()
         };
-
-        // Convert DeviceInfo back to Device for engine
-        let device = self.device_info_to_device(&operation.device_path).await?;
-
-        // Set up progress callback and create new engine instance
-        let progress_sender = self.progress_sender.clone();
-        let config = self.config.read().await;
-        let engine = SanitizationEngine::new()
-            .with_real_device_access(config.real_device_access)
-            .with_progress_callback(move |progress| {
-                let _ = progress_sender.send(progress.clone());
-            });
-
-        // Execute the wipe
-        match engine.sanitize_device(&device, operation.method.clone()).await {
-            Ok(result) => {
-                operation.result = Some(result);
-                operation.status = WipeStatus::Completed;
-            }
-            Err(e) => {
-                operation.status = WipeStatus::Failed(e.to_string());
-            }
+        let op = match op {
+            Some(o) => o,
+            None => return Err(anyhow::anyhow!("Operation not found")),
+        };
+        let mut engine = SanitizationEngine::new();
+        let device_path = op.device_path.clone();
+        let method = op.method.clone();
+        let sender = self.progress_sender.clone();
+        engine = engine.with_progress_callback(move |progress| {
+            let _ = sender.send(progress.clone());
+        });
+        // Find the device struct for sanitize_device
+        let mut detector = DriveDetector::new();
+        let device = detector.list_devices()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?
+            .into_iter()
+            .find(|d| d.path == device_path)
+            .ok_or_else(|| anyhow::anyhow!("Device not found for wipe operation"))?;
+        // Run the wipe (async)
+        let result = engine.sanitize_device(&device, method).await.map_err(|e| anyhow::anyhow!(e))?;
+        // Update operation with result
+        let mut ops = self.operations.write().await;
+        if let Some(op) = ops.get_mut(&operation_id) {
+            op.status = WipeStatus::Completed;
+            op.result = Some(result);
+            op.updated_at = Utc::now();
         }
-
-        operation.updated_at = Utc::now();
-        self.operations.write().await.insert(operation_id, operation);
-
         Ok(())
     }
 
-    async fn device_info_to_device(&self, device_path: &str) -> Result<Device> {
-        let mut detector = DriveDetector::new();
-        let devices = detector.list_devices()?;
+    /// List all available sanitization methods
+    pub fn list_sanitization_methods(&self) -> ApiResponse<Vec<SanitizationMethod>> {
+        let methods = vec![
+            SanitizationMethod::Clear,
+            SanitizationMethod::Purge,
+            SanitizationMethod::Destroy,
+        ];
+        ApiResponse::success(methods)
+    }
 
-        devices.into_iter()
-            .find(|d| d.path == device_path)
-            .ok_or_else(|| anyhow::anyhow!("Device not found: {}", device_path))
+    /// Get recommended sanitization methods for all devices
+    pub async fn get_recommendations(&self) -> ApiResponse<HashMap<String, String>> {
+        match self.scan_devices().await {
+            Ok(devices) => {
+                let mut map = HashMap::new();
+                for d in devices {
+                    map.insert(d.id.clone(), d.recommended_method.clone());
+                }
+                ApiResponse::success(map)
+            },
+            Err(e) => ApiResponse::error(format!("Failed to get recommendations: {}", e)),
+        }
+    }
+
+    /// Verify a device after wipe
+    pub async fn verify_device(&self, device_id: &str) -> ApiResponse<bool> {
+        let device = match self.find_device_by_id(device_id).await {
+            Ok(Some(info)) => info,
+            Ok(None) => return ApiResponse::error("Device not found".to_string()),
+            Err(e) => return ApiResponse::error(format!("Error finding device: {}", e)),
+        };
+        match verify_device(&device.path) {
+            Ok(result) => ApiResponse::success(result),
+            Err(e) => ApiResponse::error(format!("Verification failed: {}", e)),
+        }
+    }
+
+    /// Generate a report for a device
+    pub async fn generate_report(&self, device_id: &str) -> ApiResponse<Report> {
+        let device = match self.find_device_by_id(device_id).await {
+            Ok(Some(info)) => info,
+            Ok(None) => return ApiResponse::error("Device not found".to_string()),
+            Err(e) => return ApiResponse::error(format!("Error finding device: {}", e)),
+        };
+        match generate_report(&device.path) {
+            Ok(report) => ApiResponse::success(report),
+            Err(e) => ApiResponse::error(format!("Report generation failed: {}", e)),
+        }
     }
 
     /// Get status of a wipe operation
@@ -373,26 +411,22 @@ impl SafeWipeClient {
 
         ApiResponse::success(stats)
     }
-
-    /// Verify a device wipe
-    pub async fn verify_device(&self, device_path: &str) -> ApiResponse<bool> {
-        match verify_device(device_path) {
-            Ok(result) => ApiResponse::success(result),
-            Err(e) => ApiResponse::error(format!("Verification failed: {}", e)),
-        }
-    }
 }
 
 impl Clone for SafeWipeClient {
     fn clone(&self) -> Self {
         Self {
-            config: Arc::clone(&self.config),
-            operations: Arc::clone(&self.operations),
+            config: self.config.clone(),
+            operations: self.operations.clone(),
             progress_sender: self.progress_sender.clone(),
             engine: SanitizationEngine::new(), // Note: Engine doesn't support clone, so we create new
         }
     }
 }
+
+// Documented: All public methods of SafeWipeClient are async (except list_sanitization_methods),
+// return ApiResponse<T> for UI use, and are robust for cross-platform use.
+// This SDK can be used by any UI (Tauri, CLI, FFI, etc.) on Windows, Linux, or macOS.
 
 // Utility functions
 
@@ -442,26 +476,16 @@ fn get_supported_methods(device: &Device) -> Vec<String> {
     methods
 }
 
-// Legacy compatibility functions
-pub async fn wipe_device(device_path: &str, method: SanitizationMethod) -> Result<EngineWipeResult> {
-    let client = SafeWipeClient::new().with_config(SafeWipeConfig {
-        real_device_access: true,
-        ..Default::default()
-    });
-
-    let device = client.device_info_to_device(device_path).await?;
-    let engine = SanitizationEngine::new().with_real_device_access(true);
-
-    engine.sanitize_device(&device, method).await
+// Remove device_info_to_device and legacy wrappers that reference it
+// Fix generate_wipe_report and verify_device_wipe wrappers to match anyhow::Result return type
+pub fn generate_wipe_report(device_path: &str) -> std::result::Result<Report, std::io::Error> {
+    generate_report(device_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
 }
 
-pub fn generate_wipe_report(device_path: &str) -> Result<Report> {
-    generate_report(device_path)
+pub fn verify_device_wipe(device_path: &str) -> std::result::Result<bool, std::io::Error> {
+    verify_device(device_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
 }
 
-pub fn verify_device_wipe(device_path: &str) -> Result<bool> {
-    verify_device(device_path)
-}
 
 #[cfg(test)]
 mod tests {
