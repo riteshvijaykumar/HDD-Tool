@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SafeWipe – Secure Data Wiping</title>
+    <link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+    <header>
+        <img src="../src-tauri/icons/icon.png" alt="SafeWipe Logo" class="logo" />
+        <h1>SafeWipe</h1>
+        <p class="subtitle">Secure, tamper-proof data wiping for trustworthy IT asset recycling</p>
+        <div class="badges">
+            <span class="badge">NIST SP 800-88</span>
+            <span class="badge">Offline Mode</span>
+            <span class="badge">Cross-Platform</span>
+        </div>
+    </header>
+    <main>
+        <section class="wipe-section">
+            <h2>One-Click Secure Wipe</h2>
+            <p>Erase all user data, including hidden areas (HPA/DCO, SSD), with verifiable proof.</p>
+            <!-- Device, method, and clean type selectors will be inserted by main.js -->
+            <button id="startWipeBtn">Start Secure Wipe</button>
+            <div id="progressContainer" class="hidden">
+                <div class="progress-bar">
+                    <div class="progress" id="progressBar"></div>
+                </div>
+                <span id="progressText">Preparing...</span>
+            </div>
+            <div id="statusMessage"></div>
+        </section>
+        <section id="certificateSection" class="hidden">
+            <h3>Wipe Certificate</h3>
+            <p>Your device has been securely wiped. Download your tamper-proof certificate:</p>
+            <button id="downloadPdfBtn">Download PDF</button>
+            <button id="downloadJsonBtn">Download JSON</button>
+            <div id="certificateVerify">
+                <p>Third-party verification available. <a href="#" id="verifyLink">Verify now</a></p>
+            </div>
+        </section>
+    </main>
+    <footer>
+        <small>&copy; 2025 SafeWipe. All rights reserved.</small>
+    </footer>
+</div>
+<script src="main.js"></script>
+</body>
+</html>
+
