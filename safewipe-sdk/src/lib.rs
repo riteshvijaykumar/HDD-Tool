@@ -1,5 +1,7 @@
 //! SafeWipe SDK: Comprehensive UI-friendly wrapper for safewipe-engine
 
+mod ffi;
+
 use anyhow::Result;
 use safewipe_engine::device::{Device, DriveDetector, DriveType, Interface, VendorCapabilities};
 pub use safewipe_engine::wipe::{SanitizationEngine, SanitizationMethod, WipeResult as EngineWipeResult, WipeProgress, WipeStatus, WipeResult};
@@ -7,6 +9,8 @@ pub use safewipe_engine::report::{generate_report, Report};
 use safewipe_engine::verify::verify_device;
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
+use std::ffi::{CString, CStr};
+use std::os::raw::c_char;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
