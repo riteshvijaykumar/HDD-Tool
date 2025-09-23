@@ -1,0 +1,32 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Logs
+*.log
+
+# Editor backups
+*~
+*.swp
+*.swo
+
+# Windows
+*.exe.config
+*.pdb
+
+# Build outputs that should be ignored
+*.dll
+*.lib
+*.exp

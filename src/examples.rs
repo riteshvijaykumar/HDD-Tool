@@ -1,3 +1,13 @@
+/*!
+ * Example Usage of Professional Secure Data Wipe Tool
+ * 
+ * This module demonstrates proper usage of the NIST 800-88 compliant
+ * sanitization methods and provides safe examples for testing.
+ * 
+ * ⚠️ WARNING: These examples are for demonstration purposes only.
+ * Real drive sanitization requires administrator privileges and proper safety measures.
+ */
+
 // Example usage of NIST 800-88 sanitization methods
 // This file demonstrates how to use the sanitization module
 
@@ -5,7 +15,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use crate::sanitization::{DataSanitizer, SanitizationMethod, SanitizationPattern, SanitizationProgress};
 
-// Example: Sanitize a test file (NOT a real drive)
+// ============================================================================
+// SAFE FILE-BASED EXAMPLES
+// ============================================================================
+
+/// Example: Sanitize a test file (NOT a real drive)
+/// This is a safe demonstration using a temporary file
 pub fn example_sanitize_file() {
     let sanitizer = DataSanitizer::new();
     
@@ -45,7 +60,12 @@ pub fn example_sanitize_file() {
     std::fs::remove_file(test_file_path).ok();
 }
 
-// Example: Real-world usage for a drive (DANGEROUS - commented out)
+// ============================================================================
+// DRIVE SANITIZATION SIMULATION (EDUCATIONAL ONLY)
+// ============================================================================
+
+/// Example: Real-world usage for a drive (DANGEROUS - commented out)
+/// This demonstrates the workflow without actual execution
 pub fn example_sanitize_drive_simulation() {
     println!("🚨 DRIVE SANITIZATION SIMULATION 🚨");
     println!("This example shows how you would sanitize a real drive:");
