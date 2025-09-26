@@ -49,6 +49,8 @@ pub struct WipeConfiguration {
     pub verify_writes: bool,
     pub generate_report: bool,
     pub certificate_required: bool,
+    pub buffer_size: usize,
+    pub verification_sample_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

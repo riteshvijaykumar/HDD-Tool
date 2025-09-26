@@ -1,0 +1,288 @@
+name: Cross-Platform Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Windows builds
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: hdd-tool.exe
+            server_binary_name: hdd-tool-server.exe
+            archive_name: hdd-tool-windows-x64
+            archive_ext: .zip
+          
+          # Linux builds
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: hdd-tool
+            server_binary_name: hdd-tool-server
+            archive_name: hdd-tool-linux-x64
+            archive_ext: .tar.gz
+          
+          # macOS builds
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary_name: hdd-tool
+            server_binary_name: hdd-tool-server
+            archive_name: hdd-tool-macos-x64
+            archive_ext: .tar.gz
+          
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: hdd-tool
+            server_binary_name: hdd-tool-server
+            archive_name: hdd-tool-macos-arm64
+            archive_ext: .tar.gz
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install Linux dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+        sudo apt-get install -y hdparm util-linux
+
+    - name: Install macOS dependencies
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install openssl pkg-config
+
+    - name: Cache cargo build
+      uses: actions/cache@v3
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build desktop application
+      run: |
+        cargo build --release --target ${{ matrix.target }} --bin hdd-tool
+
+    - name: Build server application
+      run: |
+        cargo build --release --target ${{ matrix.target }} --bin hdd-tool-server --features server
+
+    - name: Create release directory
+      shell: bash
+      run: |
+        mkdir -p release
+        cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} release/
+        cp target/${{ matrix.target }}/release/${{ matrix.server_binary_name }} release/
+        cp README.md release/
+        cp -r resources release/ || true
+        cp -r reference release/ || true
+
+    - name: Create Windows installer
+      if: matrix.os == 'windows-latest'
+      shell: powershell
+      run: |
+        # Create Windows installer script
+        $installer = @"
+        @echo off
+        echo Installing HDD Tool...
+        if not exist "%PROGRAMFILES%\HDD Tool\" mkdir "%PROGRAMFILES%\HDD Tool\"
+        copy hdd-tool.exe "%PROGRAMFILES%\HDD Tool\"
+        copy hdd-tool-server.exe "%PROGRAMFILES%\HDD Tool\"
+        if exist resources xcopy /E /I resources "%PROGRAMFILES%\HDD Tool\resources\"
+        if exist reference xcopy /E /I reference "%PROGRAMFILES%\HDD Tool\reference\"
+        echo Installation complete!
+        echo.
+        echo Run 'hdd-tool' to start the application
+        pause
+        "@
+        $installer | Out-File -FilePath "release/install.bat" -Encoding ASCII
+
+    - name: Create Linux/macOS installer
+      if: matrix.os != 'windows-latest'
+      shell: bash
+      run: |
+        cat > release/install.sh << 'EOF'
+        #!/bin/bash
+        echo "Installing HDD Tool..."
+        
+        # Create installation directory
+        sudo mkdir -p /opt/hdd-tool
+        sudo mkdir -p /usr/local/bin
+        
+        # Copy binaries
+        sudo cp hdd-tool /opt/hdd-tool/
+        sudo cp hdd-tool-server /opt/hdd-tool/
+        sudo chmod +x /opt/hdd-tool/hdd-tool
+        sudo chmod +x /opt/hdd-tool/hdd-tool-server
+        
+        # Copy resources
+        if [ -d "resources" ]; then
+            sudo cp -r resources /opt/hdd-tool/
+        fi
+        if [ -d "reference" ]; then
+            sudo cp -r reference /opt/hdd-tool/
+        fi
+        
+        # Create symbolic links
+        sudo ln -sf /opt/hdd-tool/hdd-tool /usr/local/bin/hdd-tool
+        sudo ln -sf /opt/hdd-tool/hdd-tool-server /usr/local/bin/hdd-tool-server
+        
+        # Create desktop entry for Linux
+        if command -v gtk-launch >/dev/null 2>&1; then
+            mkdir -p ~/.local/share/applications
+            cat > ~/.local/share/applications/hdd-tool.desktop << 'DESKTOP'
+        [Desktop Entry]
+        Version=1.0
+        Type=Application
+        Name=HDD Tool
+        Comment=NIST SP 800-88 compliant disk sanitization tool
+        Exec=/usr/local/bin/hdd-tool
+        Icon=/opt/hdd-tool/resources/logo.png
+        Terminal=false
+        Categories=System;Utility;
+        DESKTOP
+        fi
+        
+        echo "Installation complete!"
+        echo "Run 'hdd-tool' to start the application"
+        EOF
+        chmod +x release/install.sh
+
+    - name: Create archive (Windows)
+      if: matrix.os == 'windows-latest'
+      shell: powershell
+      run: |
+        cd release
+        Compress-Archive -Path * -DestinationPath "../${{ matrix.archive_name }}${{ matrix.archive_ext }}"
+
+    - name: Create archive (Linux/macOS)
+      if: matrix.os != 'windows-latest'
+      shell: bash
+      run: |
+        cd release
+        tar -czf "../${{ matrix.archive_name }}${{ matrix.archive_ext }}" *
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ matrix.archive_name }}
+        path: ${{ matrix.archive_name }}${{ matrix.archive_ext }}
+
+  create-release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: artifacts
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.event.inputs.version || github.ref_name }}
+        release_name: HDD Tool ${{ github.event.inputs.version || github.ref_name }}
+        body: |
+          ## HDD Tool Cross-Platform Release
+          
+          ### Features
+          - NIST SP 800-88 compliant disk sanitization
+          - Support for HDDs, SSDs, NVMe drives, USB storage, and SD cards
+          - Authentication system with user management
+          - PostgreSQL server backend with web dashboard
+          - Cross-platform compatibility (Windows, Linux, macOS)
+          
+          ### Installation
+          
+          **Windows:**
+          1. Download `hdd-tool-windows-x64.zip`
+          2. Extract and run `install.bat` as Administrator
+          3. Launch from Start Menu or run `hdd-tool` in Command Prompt
+          
+          **Linux:**
+          1. Download `hdd-tool-linux-x64.tar.gz`
+          2. Extract: `tar -xzf hdd-tool-linux-x64.tar.gz`
+          3. Run installer: `sudo bash install.sh`
+          4. Launch: `hdd-tool`
+          
+          **macOS:**
+          1. Download appropriate version (`hdd-tool-macos-x64.tar.gz` for Intel, `hdd-tool-macos-arm64.tar.gz` for Apple Silicon)
+          2. Extract: `tar -xzf hdd-tool-macos-*.tar.gz`
+          3. Run installer: `sudo bash install.sh`
+          4. Launch: `hdd-tool`
+          
+          ### Server Setup
+          For server functionality, see the included Ubuntu server setup script and documentation.
+          
+          ### Requirements
+          - **Windows:** Windows 10/11 (Administrator privileges for disk operations)
+          - **Linux:** Modern Linux distribution with hdparm and util-linux
+          - **macOS:** macOS 10.15+ (Administrator privileges for disk operations)
+        draft: false
+        prerelease: false
+
+    - name: Upload Windows Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: artifacts/hdd-tool-windows-x64/hdd-tool-windows-x64.zip
+        asset_name: hdd-tool-windows-x64.zip
+        asset_content_type: application/zip
+
+    - name: Upload Linux Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: artifacts/hdd-tool-linux-x64/hdd-tool-linux-x64.tar.gz
+        asset_name: hdd-tool-linux-x64.tar.gz
+        asset_content_type: application/gzip
+
+    - name: Upload macOS x64 Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: artifacts/hdd-tool-macos-x64/hdd-tool-macos-x64.tar.gz
+        asset_name: hdd-tool-macos-x64.tar.gz
+        asset_content_type: application/gzip
+
+    - name: Upload macOS ARM64 Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: artifacts/hdd-tool-macos-arm64/hdd-tool-macos-arm64.tar.gz
+        asset_name: hdd-tool-macos-arm64.tar.gz
+        asset_content_type: application/gzip

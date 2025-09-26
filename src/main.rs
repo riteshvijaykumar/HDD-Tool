@@ -1,13 +1,12 @@
 use eframe::egui;
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use chrono;
 
-// Platform-specific imports
+// Platform-specific imports (currently unused)
 #[cfg(windows)]
+#[allow(unused_imports)]
 use windows::{
-    core::PWSTR,
     Win32::Storage::FileSystem::{
         GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
     },
@@ -19,11 +18,18 @@ mod advanced_wiper;
 mod devices;
 mod ui;
 mod platform;
+mod auth;
+mod config;
 
-use sanitization::{DataSanitizer, SanitizationMethod, SanitizationProgress};
+#[cfg(feature = "server")]
+mod server;
+
+use sanitization::{DataSanitizer, SanitizationProgress};
 use advanced_wiper::{AdvancedWiper, WipingAlgorithm, WipingProgress, DeviceInfo};
 use ui::{SecureTheme, TabWidget, DriveTableWidget, DriveInfo, AdvancedOptionsWidget, show_logo};
 use platform::{get_system_drives, get_device_path_for_sanitization};
+use auth::{AuthSystem, AuthUI, AuthPage};
+use config::AppConfig;
 
 #[derive(Debug, Clone)]
 struct DiskInfo {
@@ -55,6 +61,16 @@ struct HDDApp {
     tab_widget: TabWidget,
     drive_table: DriveTableWidget,
     advanced_options: AdvancedOptionsWidget,
+    
+    // Authentication System
+    auth_system: AuthSystem,
+    auth_ui: AuthUI,
+    is_authenticated: bool,
+    
+    // Configuration and Server Integration
+    config: AppConfig,
+    #[cfg(feature = "server")]
+    server_client: Option<server::ServerClient>,
 }
 
 impl HDDApp {
@@ -69,6 +85,8 @@ impl HDDApp {
             estimated_time_remaining: Duration::from_secs(0),
             speed_mbps: 0.0,
         };
+        
+        let config = AppConfig::load();
         
         let mut app = Self { 
             disks: Vec::new(),
@@ -85,6 +103,18 @@ impl HDDApp {
             tab_widget: TabWidget::new(),
             drive_table: DriveTableWidget::new(),
             advanced_options: AdvancedOptionsWidget::new(),
+            
+            auth_system: AuthSystem::new(),
+            auth_ui: AuthUI::new(),
+            is_authenticated: false,
+            
+            config: config.clone(),
+            #[cfg(feature = "server")]
+            server_client: if config.is_server_enabled() {
+                Some(server::ServerClient::new(&config.server_url))
+            } else {
+                None
+            },
         };
         app.refresh_disks();
         app
@@ -184,6 +214,17 @@ impl HDDApp {
     }
     
     fn handle_erase_request(&mut self) {
+        // Check user permissions first
+        if let Some(user) = self.auth_system.current_user() {
+            if !user.role.can_sanitize() {
+                self.last_error_message = Some(format!("❌ Access Denied: {} role cannot perform sanitization operations. Contact an Administrator.", user.role.as_str()));
+                return;
+            }
+        } else {
+            self.last_error_message = Some("❌ Authentication required for sanitization operations".to_string());
+            return;
+        }
+        
         // First check if erase confirmation is checked
         if !self.advanced_options.confirm_erase {
             self.last_error_message = Some("❌ Please check 'Confirm to erase the data' before starting the erase process".to_string());
@@ -553,33 +594,90 @@ impl eframe::App for HDDApp {
         // Apply SHREDX theme
         SecureTheme::apply(ctx);
         
-        // Continuous progress updates for active sanitization processes
-        let has_active_process = self.drive_table.drives.iter()
-            .any(|drive| drive.start_time.is_some() && drive.progress < 1.0);
-            
-        if has_active_process {
-            self.simulate_sanitization_progress();
-            ctx.request_repaint(); // Ensure UI updates continuously
-        }
+        // Check authentication status
+        self.is_authenticated = self.auth_system.is_authenticated();
         
         // Set window title
         ctx.send_viewport_cmd(egui::ViewportCommand::Title("SHREDX - HDD Secure Wipe Tool".to_string()));
         
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Title bar with logo
-            ui.horizontal(|ui| {
-                show_logo(ui);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("🔄").clicked() {
-                        self.refresh_disks();
+            // Show authentication UI if not logged in
+            if !self.is_authenticated {
+                match self.auth_ui.current_page {
+                    AuthPage::Login => {
+                        if self.auth_ui.show_login(ui, &mut self.auth_system) {
+                            // Login successful, refresh drives
+                            self.refresh_disks();
+                        }
                     }
-                });
+                    AuthPage::CreateUser => {
+                        self.auth_ui.show_create_user(ui, &mut self.auth_system);
+                    }
+                    AuthPage::UserManagement => {
+                        self.auth_ui.show_user_management(ui, &mut self.auth_system);
+                    }
+                }
+                return; // Don't show main UI until authenticated
+            }
+            
+            // Continuous progress updates for active sanitization processes
+            let has_active_process = self.drive_table.drives.iter()
+                .any(|drive| drive.start_time.is_some() && drive.progress < 1.0);
+                
+            if has_active_process {
+                self.simulate_sanitization_progress();
+                ctx.request_repaint(); // Ensure UI updates continuously
+            }
+        
+            // Main UI - only shown when authenticated
+            self.show_main_ui(ui);
+        });
+    }
+}
+
+impl HDDApp {
+    fn show_main_ui(&mut self, ui: &mut egui::Ui) {
+        // Title bar with logo and user info
+        ui.horizontal(|ui| {
+            show_logo(ui);
+            
+            // User info and controls
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Logout button
+                if ui.button("� Logout").clicked() {
+                    self.auth_system.logout();
+                    self.auth_ui = AuthUI::new(); // Reset auth UI
+                }
+                
+                ui.add_space(10.0);
+                
+                // User management button (only for admins)
+                let user_info = self.auth_system.current_user().cloned();
+                if let Some(user) = user_info {
+                    if user.role.can_manage_users() {
+                        if ui.button("👥 Users").clicked() {
+                            self.auth_ui.current_page = AuthPage::UserManagement;
+                            self.auth_system.logout(); // Show user management in auth context
+                        }
+                        ui.add_space(10.0);
+                    }
+                    
+                    // Show current user info
+                    ui.label(format!("👤 {} ({})", user.username, user.role.as_str()));
+                    ui.add_space(10.0);
+                }
+                
+                // Refresh button
+                if ui.button("🔄").clicked() {
+                    self.refresh_disks();
+                }
             });
+        });
             
             ui.add_space(20.0);
             
             // Tab navigation
-            let active_tab = self.tab_widget.show(ui, &["Drives", "Details", "Report"]);
+            let active_tab = self.tab_widget.show(ui, &["Drives", "Details", "Report", "Settings"]);
             
             ui.add_space(20.0);
             
@@ -591,7 +689,13 @@ impl eframe::App for HDDApp {
                     ui.add_space(30.0);
                     
                     // Advanced options and handle erase button
-                    if self.advanced_options.show(ui) {
+                    let (can_sanitize, user_role) = if let Some(user) = self.auth_system.current_user() {
+                        (user.role.can_sanitize(), user.role.as_str())
+                    } else {
+                        (false, "Unauthenticated")
+                    };
+                    
+                    if self.advanced_options.show_with_permissions(ui, can_sanitize, user_role) {
                         self.handle_erase_request();
                     }
                 },
@@ -718,8 +822,159 @@ impl eframe::App for HDDApp {
                         }
                     });
                 },
+                3 => {
+                    // Settings tab
+                    self.show_settings_tab(ui);
+                },
                 _ => {}
             }
+    }
+    
+    fn show_settings_tab(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.heading("🔧 Settings");
+            ui.add_space(20.0);
+            
+            ui.group(|ui| {
+                ui.heading("Server Configuration");
+                ui.add_space(10.0);
+                
+                // Server URL configuration
+                ui.horizontal(|ui| {
+                    ui.label("Server URL:");
+                    ui.text_edit_singleline(&mut self.config.server_url);
+                });
+                
+                ui.add_space(10.0);
+                
+                // Server sync settings
+                ui.checkbox(&mut self.config.enable_server_sync, "Enable server synchronization");
+                ui.checkbox(&mut self.config.auto_upload_certificates, "Auto-upload certificates");
+                ui.checkbox(&mut self.config.local_storage_only, "Local storage only (disable remote)");
+                
+                ui.add_space(10.0);
+                
+                // Connection settings
+                ui.horizontal(|ui| {
+                    ui.label("Connection timeout (seconds):");
+                    ui.add(egui::DragValue::new(&mut self.config.connection_timeout_seconds).range(5..=300));
+                });
+                
+                ui.horizontal(|ui| {
+                    ui.label("Retry attempts:");
+                    ui.add(egui::DragValue::new(&mut self.config.retry_attempts).range(1..=10));
+                });
+                
+                ui.add_space(15.0);
+                
+                // Server status
+                if self.config.is_server_enabled() {
+                    ui.horizontal(|ui| {
+                        ui.label("Status:");
+                        ui.colored_label(SecureTheme::SUCCESS_GREEN, "🟢 Server sync enabled");
+                    });
+                    
+                    ui.label(format!("Dashboard URL: {}", self.config.get_dashboard_url()));
+                    
+                    if ui.button("🌐 Open Web Dashboard").clicked() {
+                        if let Err(e) = webbrowser::open(&self.config.get_dashboard_url()) {
+                            eprintln!("Failed to open browser: {}", e);
+                        }
+                    }
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label("Status:");
+                        ui.colored_label(SecureTheme::WARNING_ORANGE, "🟡 Local mode only");
+                    });
+                }
+                
+                ui.add_space(15.0);
+                
+                // Action buttons
+                ui.horizontal(|ui| {
+                    if ui.button("💾 Save Configuration").clicked() {
+                        if let Err(e) = self.config.save() {
+                            eprintln!("Failed to save configuration: {}", e);
+                        } else {
+                            // Update server client if configuration changed
+                            #[cfg(feature = "server")]
+                            {
+                                self.server_client = if self.config.is_server_enabled() {
+                                    Some(crate::server::ServerClient::new(&self.config.server_url))
+                                } else {
+                                    None
+                                };
+                            }
+                        }
+                    }
+                    
+                    if ui.button("🔄 Test Connection").clicked() {
+                        #[cfg(feature = "server")]
+                        {
+                            if let Some(_client) = &self.server_client {
+                                // TODO: Implement async connection test
+                                // This would require making the UI async or using a background task
+                            }
+                        }
+                    }
+                });
+            });
+            
+            ui.add_space(20.0);
+            
+            // Application settings
+            ui.group(|ui| {
+                ui.heading("Application Settings");
+                ui.add_space(10.0);
+                
+                ui.label("Current User:");
+                if let Some(user) = self.auth_system.current_user() {
+                    ui.indent("user_info", |ui| {
+                        ui.label(format!("Username: {}", user.username));
+                        ui.label(format!("Role: {}", user.role.as_str()));
+                        ui.label(format!("Email: {}", user.email));
+                        ui.label(format!("Created: {}", user.created_at.format("%Y-%m-%d %H:%M")));
+                        if let Some(last_login) = user.last_login {
+                            ui.label(format!("Last Login: {}", last_login.format("%Y-%m-%d %H:%M")));
+                        }
+                    });
+                }
+                
+                ui.add_space(15.0);
+                
+                // Environment info
+                ui.label("Environment Information:");
+                ui.indent("env_info", |ui| {
+                    ui.label(format!("OS: {}", std::env::consts::OS));
+                    ui.label(format!("Architecture: {}", std::env::consts::ARCH));
+                    ui.label(format!("Build Mode: {}", if cfg!(debug_assertions) { "Debug" } else { "Release" }));
+                    ui.label(format!("Server Features: {}", if cfg!(feature = "server") { "Enabled" } else { "Disabled" }));
+                    
+                    if let Ok(server_url) = std::env::var("HDD_TOOL_SERVER_URL") {
+                        ui.label(format!("Environment Server URL: {}", server_url));
+                    }
+                });
+            });
+            
+            ui.add_space(20.0);
+            
+            // Advanced settings
+            ui.group(|ui| {
+                ui.heading("Advanced");
+                ui.add_space(10.0);
+                
+                if ui.button("📁 Open Data Directory").clicked() {
+                    if let Err(e) = webbrowser::open("file://.") {
+                        eprintln!("Failed to open directory: {}", e);
+                    }
+                }
+                
+                ui.add_space(10.0);
+                
+                ui.label("Configuration file location: ./config.json");
+                ui.label("User data location: ./users.json");
+                ui.label("Certificates location: ./reports/");
+            });
         });
     }
 }

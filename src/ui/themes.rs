@@ -37,6 +37,7 @@ impl SecureTheme {
     pub const DARK_BLUE: egui::Color32 = egui::Color32::from_rgb(29, 78, 216);
     pub const DANGER_RED: egui::Color32 = egui::Color32::from_rgb(239, 68, 68);
     pub const SUCCESS_GREEN: egui::Color32 = egui::Color32::from_rgb(34, 197, 94);
+    pub const WARNING_ORANGE: egui::Color32 = egui::Color32::from_rgb(249, 115, 22);
     pub const TABLE_ROW: egui::Color32 = egui::Color32::from_rgb(30, 41, 59);
     pub const TABLE_ROW_ALT: egui::Color32 = egui::Color32::from_rgb(25, 35, 52);
 }

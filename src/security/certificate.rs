@@ -333,22 +333,34 @@ impl CertificateAuthority {
 
     fn get_pattern_descriptions(&self, standard: &crate::core::SanitizationStandard) -> Vec<String> {
         match standard {
-            crate::core::SanitizationStandard::NIST80088Clear => {
+            crate::core::SanitizationStandard::NIST_SP_800_88_R1 => {
                 vec!["Single pass zeros".to_string()]
             }
-            crate::core::SanitizationStandard::NIST80088Purge => {
+            crate::core::SanitizationStandard::DoD_5220_22_M => {
                 vec![
                     "Pass 1: Zeros".to_string(),
                     "Pass 2: Ones".to_string(),
                     "Pass 3: Random".to_string(),
                 ]
             }
-            crate::core::SanitizationStandard::DoD522022M => {
+            crate::core::SanitizationStandard::AFSSI_5020 => {
                 vec![
                     "Pass 1: Zeros".to_string(),
                     "Pass 2: Ones".to_string(),
                     "Pass 3: Random".to_string(),
-                    "Pass 4: Verification zeros".to_string(),
+                ]
+            }
+            crate::core::SanitizationStandard::BSI_2011_VS => {
+                vec![
+                    "Pass 1: Zeros".to_string(),
+                    "Pass 2: Ones".to_string(),
+                ]
+            }
+            crate::core::SanitizationStandard::NAVSO_P_5239_26 => {
+                vec![
+                    "Pass 1: 0x01".to_string(),
+                    "Pass 2: 0x27".to_string(),
+                    "Pass 3: 0x96".to_string(),
                 ]
             }
         }

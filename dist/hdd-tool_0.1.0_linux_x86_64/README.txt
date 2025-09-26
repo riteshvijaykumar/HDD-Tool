@@ -9,6 +9,9 @@ QUICK START (Easiest):
 2. Fix line endings: chmod +x fix-line-endings.sh && ./fix-line-endings.sh
 3. ./hdd-tool
 
+RUST TOOLCHAIN FIX (if you see "rustup could not choose a version" error):
+chmod +x fix-rust-toolchain.sh && ./fix-rust-toolchain.sh
+
 ALTERNATIVE QUICK START:
 1. Extract this package
 2. dos2unix hdd-tool && chmod +x hdd-tool

@@ -64,9 +64,9 @@ impl SecureSanitizer {
             });
         }
 
-        // Step 3: Unlock hidden areas if requested
+        // Step 3: Unlock hidden areas if requested (for HDD targets)
         let mut actual_geometry = drive_geometry.clone();
-        if matches!(request.target_type, TargetType::ComprehensiveFull | TargetType::HiddenAreas) {
+        if matches!(request.target_type, TargetType::HDD) {
             if drive_geometry.has_hpa {
                 match drive.unlock_hpa() {
                     Ok(true) => {
@@ -78,13 +78,11 @@ impl SecureSanitizer {
                     Ok(false) => println!("No HPA detected or already unlocked"),
                     Err(e) => {
                         println!("Warning: Failed to unlock HPA: {}", e);
-                        if matches!(request.target_type, TargetType::HiddenAreas) {
-                            return Err(WipeError {
-                                code: WipeErrorCode::HPAUnlockFailed,
-                                message: "Failed to unlock HPA for hidden area wipe".to_string(),
-                                sector: None,
-                            });
-                        }
+                        return Err(WipeError {
+                            code: WipeErrorCode::HPAUnlockFailed,
+                            message: "Failed to unlock HPA for hidden area wipe".to_string(),
+                            sector: None,
+                        });
                     }
                 }
             }
@@ -171,24 +169,8 @@ impl SecureSanitizer {
 
     fn calculate_target_range(&self, request: &WipeRequest, geometry: &DriveGeometry) -> WipeResult2<(u64, u64)> {
         match &request.target_type {
-            TargetType::FullDisk => Ok((0, geometry.total_sectors)),
-            TargetType::ComprehensiveFull => Ok((0, geometry.total_sectors)),
-            TargetType::HiddenAreas => {
-                if geometry.has_hpa && geometry.hpa_size > 0 {
-                    let hpa_start_sector = geometry.user_capacity / geometry.sector_size;
-                    let hpa_sector_count = geometry.hpa_size / geometry.sector_size;
-                    Ok((hpa_start_sector, hpa_sector_count))
-                } else {
-                    Err(WipeError {
-                        code: WipeErrorCode::InvalidPattern,
-                        message: "No hidden areas detected".to_string(),
-                        sector: None,
-                    })
-                }
-            }
-            TargetType::Partition(path) => {
-                // For partition wiping, we would need to parse the partition table
-                // For now, return the full disk (this should be enhanced)
+            TargetType::HDD | TargetType::SSD | TargetType::Flash | TargetType::Optical | TargetType::Tape => {
+                // For all device types, sanitize the full capacity
                 Ok((0, geometry.total_sectors))
             }
         }
@@ -196,22 +178,34 @@ impl SecureSanitizer {
 
     fn get_patterns_for_standard(&self, standard: &SanitizationStandard, passes: u32) -> WipeResult2<Vec<Vec<u8>>> {
         match standard {
-            SanitizationStandard::NIST80088Clear => {
-                Ok(vec![NIST_CLEAR_PATTERNS.to_vec()])
+            SanitizationStandard::NIST_SP_800_88_R1 => {
+                Ok(vec![vec![0x00; 512]]) // Single zero pass for NIST Clear
             }
-            SanitizationStandard::NIST80088Purge => {
+            SanitizationStandard::DoD_5220_22_M => {
                 let mut patterns = Vec::new();
-                patterns.push(NIST_PURGE_PATTERNS[0].to_vec()); // Zeros
-                patterns.push(NIST_PURGE_PATTERNS[1].to_vec()); // Ones
-                patterns.push(self.generate_random_pattern()); // Random
+                patterns.push(vec![0x00; 512]); // Pass 1: Zeros
+                patterns.push(vec![0xFF; 512]); // Pass 2: Ones
+                patterns.push(self.generate_random_pattern()); // Pass 3: Random
                 Ok(patterns)
             }
-            SanitizationStandard::DoD522022M => {
+            SanitizationStandard::AFSSI_5020 => {
                 let mut patterns = Vec::new();
-                patterns.push(DOD_522022M_PATTERNS[0].to_vec()); // Pass 1: Zeros
-                patterns.push(DOD_522022M_PATTERNS[1].to_vec()); // Pass 2: Ones
+                patterns.push(vec![0x00; 512]); // Pass 1: Zeros
+                patterns.push(vec![0xFF; 512]); // Pass 2: Ones
                 patterns.push(self.generate_random_pattern()); // Pass 3: Random
-                patterns.push(DOD_522022M_PATTERNS[3].to_vec()); // Pass 4: Zeros (verification)
+                Ok(patterns)
+            }
+            SanitizationStandard::BSI_2011_VS => {
+                let mut patterns = Vec::new();
+                patterns.push(vec![0x00; 512]); // Pass 1: Zeros
+                patterns.push(vec![0xFF; 512]); // Pass 2: Ones
+                Ok(patterns)
+            }
+            SanitizationStandard::NAVSO_P_5239_26 => {
+                let mut patterns = Vec::new();
+                patterns.push(vec![0x01; 512]); // Pass 1: 0x01
+                patterns.push(vec![0x27; 512]); // Pass 2: 0x27
+                patterns.push(vec![0x96; 512]); // Pass 3: 0x96
                 Ok(patterns)
             }
         }
