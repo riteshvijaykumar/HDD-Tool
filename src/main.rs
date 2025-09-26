@@ -3,6 +3,9 @@ use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use chrono;
+
+// Platform-specific imports
+#[cfg(windows)]
 use windows::{
     core::PWSTR,
     Win32::Storage::FileSystem::{
@@ -13,11 +16,14 @@ use windows::{
 mod sanitization;
 mod ata_commands;
 mod advanced_wiper;
+mod devices;
 mod ui;
+mod platform;
 
 use sanitization::{DataSanitizer, SanitizationMethod, SanitizationProgress};
 use advanced_wiper::{AdvancedWiper, WipingAlgorithm, WipingProgress, DeviceInfo};
 use ui::{SecureTheme, TabWidget, DriveTableWidget, DriveInfo, AdvancedOptionsWidget, show_logo};
+use platform::{get_system_drives, get_device_path_for_sanitization};
 
 #[derive(Debug, Clone)]
 struct DiskInfo {
@@ -28,8 +34,8 @@ struct DiskInfo {
     total_space: u64,
     free_space: u64,
     used_space: u64,
-    supports_secure_erase: bool,
-    is_encrypted: bool,
+    label: String,
+    selected: bool,
 }
 
 struct HDDApp {
@@ -88,106 +94,43 @@ impl HDDApp {
         self.disks.clear();
         self.drive_table.drives.clear();
         
-        unsafe {
-            let logical_drives = GetLogicalDrives();
-            
-            for i in 0..26 {
-                if logical_drives & (1 << i) != 0 {
-                    let drive_letter = format!("{}:", (b'A' + i) as char);
-                    let drive_path = format!("{}\\", drive_letter);
+        // Use cross-platform drive detection
+        match get_system_drives() {
+            Ok(platform_drives) => {
+                for platform_drive in platform_drives {
+                    // Convert platform drive info to internal format
+                    let disk_info = DiskInfo {
+                        drive_letter: platform_drive.path.clone(),
+                        drive_type: platform_drive.drive_type.clone(),
+                        detailed_type: platform_drive.drive_type.clone(),
+                        file_system: "Unknown".to_string(), // We'll detect this later if needed
+                        total_space: platform_drive.total_space,
+                        free_space: platform_drive.free_space,
+                        used_space: platform_drive.total_space.saturating_sub(platform_drive.free_space),
+                        label: platform_drive.label.clone(),
+                        selected: false,
+                    };
                     
-                    if let Some(disk_info) = self.get_disk_info(&drive_path) {
-                        // Add to internal list
-                        self.disks.push(disk_info.clone());
-                        
-                        // Add to drive table widget
-                        let drive_ui_info = DriveInfo::new(
-                            if disk_info.drive_letter == "C:" { 
-                                "OS".to_string() 
-                            } else { 
-                                disk_info.drive_letter.clone() 
-                            },
-                            disk_info.drive_letter.clone(),
-                            Self::format_bytes(disk_info.total_space),
-                            Self::format_bytes(disk_info.used_space),
-                        );
-                        self.drive_table.add_drive(drive_ui_info);
-                    }
+                    // Add to internal list
+                    self.disks.push(disk_info.clone());
+                    
+                    // Add to drive table widget
+                    let drive_ui_info = DriveInfo::new(
+                        platform_drive.label,
+                        platform_drive.path,
+                        Self::format_bytes(platform_drive.total_space),
+                        Self::format_bytes(platform_drive.total_space.saturating_sub(platform_drive.free_space)),
+                    );
+                    self.drive_table.add_drive(drive_ui_info);
                 }
+            }
+            Err(e) => {
+                println!("Error getting system drives: {}", e);
             }
         }
     }
 
-    fn get_disk_info(&self, drive_path: &str) -> Option<DiskInfo> {
-        let drive_letter = drive_path.trim_end_matches('\\');
-        
-        unsafe {
-            let wide_path: Vec<u16> = drive_path.encode_utf16().chain(std::iter::once(0)).collect();
-            let drive_type = GetDriveTypeW(PWSTR(wide_path.as_ptr() as *mut u16));
-            
-            let drive_type_str = match drive_type {
-                2 => "Removable",
-                3 => "Fixed",
-                4 => "Network",
-                5 => "CD-ROM",
-                6 => "RAM",
-                _ => "Unknown",
-            };
-            
-            let mut total_bytes = 0u64;
-            let mut free_bytes = 0u64;
-            
-            let result = GetDiskFreeSpaceExW(
-                PWSTR(wide_path.as_ptr() as *mut u16),
-                Some(&mut free_bytes),
-                Some(&mut total_bytes),
-                None,
-            );
-            
-            if result.is_err() {
-                return None;
-            }
-            
-            let mut volume_name_buffer = vec![0u16; 256];
-            let mut file_system_buffer = vec![0u16; 256];
-            let mut volume_serial_number = 0u32;
-            let mut maximum_component_length = 0u32;
-            let mut file_system_flags = 0u32;
-            
-            let _ = GetVolumeInformationW(
-                PWSTR(wide_path.as_ptr() as *mut u16),
-                Some(&mut volume_name_buffer),
-                Some(&mut volume_serial_number),
-                Some(&mut maximum_component_length),
-                Some(&mut file_system_flags),
-                Some(&mut file_system_buffer),
-            );
-            
-            let file_system = String::from_utf16_lossy(&file_system_buffer)
-                .trim_end_matches('\0')
-                .to_string();
-            
-            let (detailed_type, supports_secure_erase) = if drive_type_str == "Fixed" {
-                self.get_detailed_drive_info(drive_letter)
-            } else {
-                (format!("{} Drive", drive_type_str), false)
-            };
-            
-            let is_encrypted = file_system_flags & 0x00040000 != 0; // FILE_SUPPORTS_ENCRYPTION
-            
-            Some(DiskInfo {
-                drive_letter: drive_letter.to_string(),
-                drive_type: drive_type_str.to_string(),
-                detailed_type,
-                file_system,
-                total_space: total_bytes,
-                free_space: free_bytes,
-                used_space: total_bytes - free_bytes,
-                supports_secure_erase,
-                is_encrypted,
-            })
-        }
-    }
+    // Cross-platform disk info is now handled by the platform module
 
     fn get_detailed_drive_info(&self, drive_letter: &str) -> (String, bool) {
         use ata_commands::AtaInterface;
@@ -294,13 +237,144 @@ impl HDDApp {
         
         // Start the sanitization process for each selected drive
         for (drive_path, drive_name, drive_index) in drives_to_process {
-            self.start_drive_sanitization(&drive_path, &drive_name, drive_index);
+            // Use device-specific sanitization by default, with fallback to traditional method
+            self.start_device_specific_sanitization(&drive_path, &drive_name, drive_index);
         }
         
         // Begin progress simulation/tracking
         self.simulate_sanitization_progress();
     }
     
+    /// Enhanced sanitization using device-specific erasers
+    fn start_device_specific_sanitization(&mut self, drive_path: &str, drive_name: &str, drive_index: usize) {
+        // Get the actual device path for sanitization (platform-specific)
+        let sanitization_path = if let Some(disk_info) = self.disks.get(drive_index) {
+            get_device_path_for_sanitization(&platform::DriveInfo {
+                path: disk_info.drive_letter.clone(),
+                label: disk_info.label.clone(),
+                drive_type: disk_info.drive_type.clone(),
+                total_space: disk_info.total_space,
+                free_space: disk_info.free_space,
+            })
+        } else {
+            drive_path.to_string()
+        };
+        println!("🔍 Starting device-specific analysis and sanitization for drive {} ({})", drive_name, drive_path);
+        
+        // Convert drive path to device path format
+        let device_path = if drive_path.ends_with(':') {
+            format!("{}\\", drive_path)
+        } else {
+            drive_path.to_string()
+        };
+        
+        // Clone necessary data for the thread
+        let device_path_clone = device_path.clone();
+        let sanitization_path_clone = sanitization_path.clone();
+        let drive_name_clone = drive_name.to_string();
+        let selected_algorithm = self.selected_algorithm.clone();
+        let wipe_progress = Arc::clone(&self.wipe_progress);
+        
+        // Start analysis and sanitization in a separate thread
+        std::thread::spawn(move || {
+            match devices::DeviceFactory::analyze_and_create(&device_path_clone) {
+                Ok((device_info, eraser)) => {
+                    println!("✅ Device analysis complete:");
+                    println!("   Device Type: {:?}", device_info.device_type);
+                    println!("   Model: {}", device_info.model);
+                    println!("   Size: {} bytes", device_info.size_bytes);
+                    println!("   Supports Secure Erase: {}", device_info.supports_secure_erase);
+                    println!("   Supports TRIM: {}", device_info.supports_trim);
+                    
+                    // Get recommended algorithms for this device type
+                    let recommended_algorithms = eraser.get_recommended_algorithms();
+                    println!("🔧 Recommended algorithms: {:?}", recommended_algorithms);
+                    
+                    // Use selected algorithm, or fall back to first recommended
+                    let algorithm_to_use = if recommended_algorithms.contains(&selected_algorithm) {
+                        selected_algorithm
+                    } else {
+                        recommended_algorithms.first().cloned().unwrap_or(WipingAlgorithm::Random)
+                    };
+                    
+                    println!("🚀 Using algorithm: {:?}", algorithm_to_use);
+                    
+                    // Initialize progress
+                    if let Ok(mut progress) = wipe_progress.lock() {
+                        progress.algorithm = algorithm_to_use.clone();
+                        progress.bytes_processed = 0;
+                        progress.total_bytes = device_info.size_bytes;
+                        progress.current_pass = 0;
+                        progress.total_passes = match algorithm_to_use {
+                            WipingAlgorithm::DoD522022M => 3,
+                            WipingAlgorithm::Gutmann => 35,
+                            WipingAlgorithm::SevenPass => 7,
+                            WipingAlgorithm::ThreePass => 3,
+                            WipingAlgorithm::TwoPass => 2,
+                            _ => 1,
+                        };
+                    }
+                    
+                    // Perform device-specific erasure
+                    match eraser.erase_device(&device_info, algorithm_to_use, wipe_progress.clone()) {
+                        Ok(_) => {
+                            println!("✅ Device-specific erasure completed for {}", drive_name_clone);
+                            
+                            // Verify erasure if supported
+                            match eraser.verify_erasure(&device_info) {
+                                Ok(true) => println!("✅ Erasure verification passed for {}", drive_name_clone),
+                                Ok(false) => println!("⚠️  Erasure verification failed for {}", drive_name_clone),
+                                Err(e) => println!("❌ Erasure verification error for {}: {}", drive_name_clone, e),
+                            }
+                        }
+                        Err(e) => {
+                            println!("❌ Device-specific erasure failed for {}: {}", drive_name_clone, e);
+                            println!("🔄 Falling back to traditional file-level sanitization...");
+                            
+                            // Fallback to NIST SP 800-88 disk purge
+                            let sanitizer = DataSanitizer::new();
+                            match sanitizer.nist_purge_entire_disk(&device_path_clone, None) {
+                                Ok(_) => println!("✅ NIST SP 800-88 Purge completed for {}", drive_name_clone),
+                                Err(e) => println!("❌ NIST SP 800-88 Purge also failed for {}: {}", drive_name_clone, e),
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("❌ Device analysis failed for {}: {}", drive_name_clone, e);
+                    println!("🔄 Falling back to traditional file-level sanitization...");
+                    
+                    // Fallback to NIST SP 800-88 disk purge
+                    let sanitizer = DataSanitizer::new();
+                    match sanitizer.nist_purge_entire_disk(&sanitization_path_clone, None) {
+                        Ok(_) => println!("✅ NIST SP 800-88 Purge completed for {}", drive_name_clone),
+                        Err(e) => println!("❌ NIST SP 800-88 Purge also failed for {}: {}", drive_name_clone, e),
+                    }
+                }
+            }
+        });
+        
+        // Initialize progress tracking for this drive
+        let total_bytes = if let Some(drive) = self.drive_table.drives.get(drive_index) {
+            self.parse_size_to_bytes(&drive.size)
+        } else {
+            1_000_000_000 // Default 1GB if drive not found
+        };
+        
+        if let Some(drive) = self.drive_table.drives.get_mut(drive_index) {
+            drive.start_processing(total_bytes);
+            drive.status = format!("Device-specific {} erasure", 
+                match self.selected_algorithm {
+                    WipingAlgorithm::DoD522022M => "DoD 5220.22-M",
+                    WipingAlgorithm::Gutmann => "Gutmann 35-pass",
+                    WipingAlgorithm::AtaSecureErase => "ATA Secure Erase",
+                    WipingAlgorithm::NvmeSecureErase => "NVMe Secure Erase",
+                    WipingAlgorithm::NvmeCryptoErase => "NVMe Crypto Erase",
+                    _ => "Optimized",
+                });
+        }
+    }
+
     fn start_drive_sanitization(&mut self, drive_path: &str, drive_name: &str, drive_index: usize) {
         let sanitizer = DataSanitizer::new();
         let passes = 3; // NIST SP 800-88 and DoD 5220.22-M typically use 3 passes
@@ -399,6 +473,8 @@ impl HDDApp {
                 percentage: overall_percentage,
                 bytes_processed: total_processed_all_drives,
                 total_bytes: total_bytes_all_drives,
+                estimated_time_remaining: std::time::Duration::from_secs(0),
+                current_operation: "Device-specific sanitization".to_string(),
             };
             self.sanitization_progress = Some(progress);
         }
@@ -537,8 +613,8 @@ impl eframe::App for HDDApp {
                                         ui.label(format!("Total Space: {}", drive.size));
                                         ui.label(format!("Used Space: {}", drive.used));
                                         ui.label(format!("Free Space: {}", Self::format_bytes(disk_info.free_space)));
-                                        ui.label(format!("Secure Erase: {}", if disk_info.supports_secure_erase { "✅ Supported" } else { "❌ Not Supported" }));
-                                        ui.label(format!("Encrypted: {}", if disk_info.is_encrypted { "🔒 Yes" } else { "🔓 No" }));
+                                        ui.label("Secure Erase: ❓ Detection needed");
+                                        ui.label("Encrypted: ❓ Detection needed");
                                     });
                                 }
                             }

@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 eframe = "0.29"   # egui + app framework
-nix = "0.29"      # for Linux syscalls
 rand = "0.8"      # for cryptographic random data generation
 chrono = { version = "0.4", features = ["serde"] }  # for timestamps in certificates
 num_cpus = "1.16"  # for optimal thread count detection
@@ -20,6 +19,9 @@ printpdf = "0.6"
 hex = "0.4"
 ring = "0.17"
 x509-parser = "0.15"
+
+# Platform-specific dependencies
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
@@ -27,3 +29,23 @@ windows = { version = "0.58", features = [
     "Win32_Security",
     "Win32_System_Ioctl",
 ] }
+
+[target.'cfg(unix)'.dependencies]
+nix = "0.29"      # for Linux/Unix syscalls
+libc = "0.2"      # for system calls
+sysinfo = "0.30"  # for system information
+
+# Bundle configuration for Linux releases
+[package.metadata.bundle]
+name = "HDD Tool"
+identifier = "com.sih.hdd-tool"
+version = "0.1.0"
+# icon = ["resources/logo.png"]
+category = "Utility"
+short_description = "NIST SP 800-88 compliant disk sanitization tool"
+long_description = "HDD Tool is a cross-platform disk sanitization utility that provides NIST SP 800-88 compliant data erasure for HDDs, SSDs, NVMe drives, USB storage, and SD cards."
+copyright = "Copyright © 2025 SIH Team"
+authors = "SIH Team"
+homepage = "https://github.com/riteshvijaykumar/HDD-Tool"
+license_file = "LICENSE"
+deb_depends = ["hdparm", "util-linux"]

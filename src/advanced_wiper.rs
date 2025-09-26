@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use crate::ata_commands::AtaInterface;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum WipingAlgorithm {
     // NIST 800-88 Approved Methods
     NistClear,                    // Single pass overwrite
@@ -32,6 +32,7 @@ pub enum WipingAlgorithm {
     Ones,                         // Single ones pass
     
     // Custom Multi-pass Methods
+    TwoPass,                      // 0x00, Random (conservative)
     ThreePass,                    // 0x00, 0xFF, Random
     SevenPass,                    // Enhanced 7-pass method
     CustomPattern(Vec<u8>),       // User-defined pattern
@@ -82,7 +83,7 @@ pub enum DeviceType {
     SDCard,
     USBDrive,
     MMC,
-    eMMC,
+    EMmc,
     CompactFlash,
     Other(String),
 }
